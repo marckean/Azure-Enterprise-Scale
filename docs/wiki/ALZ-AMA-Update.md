@@ -69,6 +69,52 @@ Please check the most recent information on parity gaps:
   - dcr-changetracking-prod-<region>-001
   - dcr-defendersql-prod-<region>-001
   - dcr-vminsights-prod-<region>-001
+- Log Analytics Workspace Table Configuration
+  - Analytics Tables: Real-time monitoring data (Security events, Performance metrics)
+  - Auxiliary Tables: Compliance and audit data (Change tracking logs, Compliance reports)
+  - Basic Tables: Long-term archive data (Historical performance data, Legacy audit logs)
+
+## Data Collection Rules and Table Type Strategy
+
+### Table Type Assignment Strategy
+
+```mermaid
+graph TB
+    subgraph "Data Sources"
+        AMA[Azure Monitor Agent]
+        DCR_CT[DCR Change Tracking]
+        DCR_SQL[DCR Defender SQL]
+        DCR_VM[DCR VM Insights]
+    end
+    
+    subgraph "Log Analytics Tables"
+        AT[Analytics Tables<br/>Real-time monitoring]
+        AUX[Auxiliary Tables<br/>Compliance data]
+        BT[Basic Tables<br/>Archive storage]
+    end
+    
+    subgraph "Cost Optimization"
+        CO[40-90% cost reduction<br/>vs Analytics-only approach]
+    end
+    
+    AMA --> AT
+    DCR_CT --> AUX
+    DCR_SQL --> AT
+    DCR_VM --> AT
+    
+    AUX --> CO
+    BT --> CO
+```
+
+### Data Collection Rule Enhancements
+
+The following DCRs now include table type routing logic for cost optimization:
+
+| DCR Name | Primary Table Type | Data Classification | Cost Impact |
+|----------|-------------------|-------------------|-------------|
+| dcr-vminsights-prod-<region>-001 | Analytics | Real-time performance monitoring | Baseline |
+| dcr-changetracking-prod-<region>-001 | Auxiliary | Compliance and audit data | 40-60% reduction |
+| dcr-defendersql-prod-<region>-001 | Analytics | Security monitoring | Baseline |
 
 ## New Custom Policy Definitions
 
