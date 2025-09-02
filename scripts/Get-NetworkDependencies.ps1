@@ -1,0 +1,293 @@
+#Requires -Modules Az.Accounts, Az.Resources, Az.Network
+
+<#
+.SYNOPSIS
+    Analyzes network connectivity and dependencies for Virtual WAN migration planning.
+
+.DESCRIPTION
+    This supplementary script provides detailed network topology analysis including:
+    - VNet peering relationships
+    - Network Security Groups and rules
+    - Route tables and custom routes
+    - VPN/ExpressRoute connections
+    - Load balancers and application gateways
+    - Service endpoints and private endpoints
+    
+    This information is critical for understanding dependencies before migrating to Virtual WAN.
+
+.PARAMETER OutputPath
+    Path where the CSV files will be saved. Defaults to current directory.
+
+.PARAMETER Region
+    Azure region to focus on. Defaults to "Australia East".
+
+.EXAMPLE
+    .\Get-NetworkDependencies.ps1 -OutputPath "C:\temp\azure-inventory"
+#>
+
+param(
+    [Parameter(Mandatory = $false)]
+    [string]$OutputPath = ".",
+    
+    [Parameter(Mandatory = $false)]
+    [string]$Region = "Australia East"
+)
+
+# Initialize results arrays
+$peeringInventory = @()
+$nsgInventory = @()
+$routeTableInventory = @()
+$connectivityInventory = @()
+$networkServicesInventory = @()
+
+Write-Host "Analyzing network dependencies for Virtual WAN migration..." -ForegroundColor Green
+
+# Check if user is logged in
+$context = Get-AzContext
+if (-not $context) {
+    Write-Host "Please login to Azure first using Connect-AzAccount" -ForegroundColor Red
+    exit 1
+}
+
+# Get all subscriptions
+$subscriptions = Get-AzSubscription | Where-Object { $_.State -eq "Enabled" }
+$totalSubscriptions = $subscriptions.Count
+$currentSubscription = 0
+
+foreach ($subscription in $subscriptions) {
+    $currentSubscription++
+    Write-Host "`n[$currentSubscription/$totalSubscriptions] Analyzing subscription: $($subscription.Name)" -ForegroundColor Yellow
+    
+    try {
+        Set-AzContext -SubscriptionId $subscription.Id | Out-Null
+        
+        # Get all virtual networks in the region
+        $vnets = Get-AzVirtualNetwork | Where-Object { $_.Location -eq $Region }
+        
+        foreach ($vnet in $vnets) {
+            Write-Host "  Analyzing VNet: $($vnet.Name)" -ForegroundColor Cyan
+            
+            # Analyze VNet Peerings
+            foreach ($peering in $vnet.VirtualNetworkPeerings) {
+                $remoteVNetName = "Unknown"
+                $remoteSubscription = "Unknown"
+                $remoteResourceGroup = "Unknown"
+                
+                if ($peering.RemoteVirtualNetwork.Id) {
+                    $remoteVNetId = $peering.RemoteVirtualNetwork.Id
+                    $remoteVNetName = $remoteVNetId.Split('/')[-1]
+                    $remoteSubscription = $remoteVNetId.Split('/')[2]
+                    $remoteResourceGroup = $remoteVNetId.Split('/')[4]
+                }
+                
+                $peeringRecord = [PSCustomObject]@{
+                    SubscriptionId = $subscription.Id
+                    SubscriptionName = $subscription.Name
+                    ResourceGroupName = $vnet.ResourceGroupName
+                    VNetName = $vnet.Name
+                    PeeringName = $peering.Name
+                    PeeringState = $peering.PeeringState
+                    AllowVnetAccess = $peering.AllowVirtualNetworkAccess
+                    AllowForwardedTraffic = $peering.AllowForwardedTraffic
+                    AllowGatewayTransit = $peering.AllowGatewayTransit
+                    UseRemoteGateways = $peering.UseRemoteGateways
+                    RemoteVNetName = $remoteVNetName
+                    RemoteSubscription = $remoteSubscription
+                    RemoteResourceGroup = $remoteResourceGroup
+                    RemoteVNetId = $peering.RemoteVirtualNetwork.Id
+                }
+                $peeringInventory += $peeringRecord
+            }
+            
+            # Analyze subnets for NSGs and Route Tables
+            foreach ($subnet in $vnet.Subnets) {
+                # Network Security Groups
+                if ($subnet.NetworkSecurityGroup) {
+                    try {
+                        $nsgId = $subnet.NetworkSecurityGroup.Id
+                        $nsgName = $nsgId.Split('/')[-1]
+                        $nsgResourceGroup = $nsgId.Split('/')[4]
+                        
+                        $nsg = Get-AzNetworkSecurityGroup -ResourceGroupName $nsgResourceGroup -Name $nsgName -ErrorAction SilentlyContinue
+                        if ($nsg) {
+                            foreach ($rule in $nsg.SecurityRules) {
+                                $nsgRecord = [PSCustomObject]@{
+                                    SubscriptionId = $subscription.Id
+                                    SubscriptionName = $subscription.Name
+                                    VNetName = $vnet.Name
+                                    SubnetName = $subnet.Name
+                                    NSGName = $nsg.Name
+                                    NSGResourceGroup = $nsgResourceGroup
+                                    RuleName = $rule.Name
+                                    Priority = $rule.Priority
+                                    Direction = $rule.Direction
+                                    Access = $rule.Access
+                                    Protocol = $rule.Protocol
+                                    SourcePortRange = $rule.SourcePortRange -join ", "
+                                    DestinationPortRange = $rule.DestinationPortRange -join ", "
+                                    SourceAddressPrefix = $rule.SourceAddressPrefix -join ", "
+                                    DestinationAddressPrefix = $rule.DestinationAddressPrefix -join ", "
+                                }
+                                $nsgInventory += $nsgRecord
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Warning "Could not analyze NSG for subnet $($subnet.Name)"
+                    }
+                }
+                
+                # Route Tables
+                if ($subnet.RouteTable) {
+                    try {
+                        $routeTableId = $subnet.RouteTable.Id
+                        $routeTableName = $routeTableId.Split('/')[-1]
+                        $routeTableResourceGroup = $routeTableId.Split('/')[4]
+                        
+                        $routeTable = Get-AzRouteTable -ResourceGroupName $routeTableResourceGroup -Name $routeTableName -ErrorAction SilentlyContinue
+                        if ($routeTable) {
+                            foreach ($route in $routeTable.Routes) {
+                                $routeRecord = [PSCustomObject]@{
+                                    SubscriptionId = $subscription.Id
+                                    SubscriptionName = $subscription.Name
+                                    VNetName = $vnet.Name
+                                    SubnetName = $subnet.Name
+                                    RouteTableName = $routeTable.Name
+                                    RouteTableResourceGroup = $routeTableResourceGroup
+                                    RouteName = $route.Name
+                                    AddressPrefix = $route.AddressPrefix
+                                    NextHopType = $route.NextHopType
+                                    NextHopIpAddress = $route.NextHopIpAddress
+                                }
+                                $routeTableInventory += $routeRecord
+                            }
+                        }
+                    }
+                    catch {
+                        Write-Warning "Could not analyze Route Table for subnet $($subnet.Name)"
+                    }
+                }
+            }
+            
+            # Analyze VPN Gateways and ExpressRoute Gateways
+            $gateways = Get-AzVirtualNetworkGateway -ResourceGroupName $vnet.ResourceGroupName -ErrorAction SilentlyContinue
+            foreach ($gateway in $gateways) {
+                if ($gateway.Location -eq $Region) {
+                    $connectivityRecord = [PSCustomObject]@{
+                        SubscriptionId = $subscription.Id
+                        SubscriptionName = $subscription.Name
+                        ResourceGroupName = $vnet.ResourceGroupName
+                        VNetName = $vnet.Name
+                        GatewayName = $gateway.Name
+                        GatewayType = $gateway.GatewayType
+                        VpnType = $gateway.VpnType
+                        Sku = $gateway.Sku.Name
+                        EnableBgp = $gateway.EnableBgp
+                        ActiveActive = $gateway.ActiveActive
+                        ConnectionCount = (Get-AzVirtualNetworkGatewayConnection -ResourceGroupName $vnet.ResourceGroupName -ErrorAction SilentlyContinue | Where-Object { $_.VirtualNetworkGateway1.Id -eq $gateway.Id -or $_.VirtualNetworkGateway2.Id -eq $gateway.Id }).Count
+                    }
+                    $connectivityInventory += $connectivityRecord
+                }
+            }
+        }
+        
+        # Analyze other network services in the region
+        $loadBalancers = Get-AzLoadBalancer | Where-Object { $_.Location -eq $Region }
+        foreach ($lb in $loadBalancers) {
+            $networkServicesRecord = [PSCustomObject]@{
+                SubscriptionId = $subscription.Id
+                SubscriptionName = $subscription.Name
+                ResourceGroupName = $lb.ResourceGroupName
+                ServiceName = $lb.Name
+                ServiceType = "Load Balancer"
+                Sku = $lb.Sku.Name
+                Location = $lb.Location
+                FrontendIPs = ($lb.FrontendIpConfigurations | ForEach-Object { $_.PrivateIpAddress }) -join ", "
+                BackendPools = $lb.BackendAddressPools.Count
+                Rules = $lb.LoadBalancingRules.Count
+            }
+            $networkServicesInventory += $networkServicesRecord
+        }
+        
+        $appGateways = Get-AzApplicationGateway | Where-Object { $_.Location -eq $Region }
+        foreach ($appGw in $appGateways) {
+            $networkServicesRecord = [PSCustomObject]@{
+                SubscriptionId = $subscription.Id
+                SubscriptionName = $subscription.Name
+                ResourceGroupName = $appGw.ResourceGroupName
+                ServiceName = $appGw.Name
+                ServiceType = "Application Gateway"
+                Sku = $appGw.Sku.Name
+                Location = $appGw.Location
+                FrontendIPs = ($appGw.FrontendIPConfigurations | ForEach-Object { $_.PrivateIPAddress }) -join ", "
+                BackendPools = $appGw.BackendAddressPools.Count
+                Rules = $appGw.RequestRoutingRules.Count
+            }
+            $networkServicesInventory += $networkServicesRecord
+        }
+    }
+    catch {
+        Write-Warning "Error processing subscription $($subscription.Name): $($_.Exception.Message)"
+    }
+}
+
+# Create output directory if it doesn't exist
+if (-not (Test-Path $OutputPath)) {
+    New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+}
+
+# Generate timestamp for file names
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+
+# Export results to CSV files
+$peeringCsvPath = Join-Path $OutputPath "VNet-Peering-Analysis-$timestamp.csv"
+$nsgCsvPath = Join-Path $OutputPath "NSG-Analysis-$timestamp.csv"
+$routeCsvPath = Join-Path $OutputPath "Route-Table-Analysis-$timestamp.csv"
+$connectivityCsvPath = Join-Path $OutputPath "Connectivity-Analysis-$timestamp.csv"
+$networkServicesCsvPath = Join-Path $OutputPath "Network-Services-Analysis-$timestamp.csv"
+
+Write-Host "`nExporting network dependency analysis..." -ForegroundColor Green
+
+$peeringInventory | Export-Csv -Path $peeringCsvPath -NoTypeInformation
+Write-Host "VNet peering analysis exported to: $peeringCsvPath" -ForegroundColor Green
+
+$nsgInventory | Export-Csv -Path $nsgCsvPath -NoTypeInformation
+Write-Host "NSG analysis exported to: $nsgCsvPath" -ForegroundColor Green
+
+$routeTableInventory | Export-Csv -Path $routeCsvPath -NoTypeInformation
+Write-Host "Route table analysis exported to: $routeCsvPath" -ForegroundColor Green
+
+$connectivityInventory | Export-Csv -Path $connectivityCsvPath -NoTypeInformation
+Write-Host "Connectivity analysis exported to: $connectivityCsvPath" -ForegroundColor Green
+
+$networkServicesInventory | Export-Csv -Path $networkServicesCsvPath -NoTypeInformation
+Write-Host "Network services analysis exported to: $networkServicesCsvPath" -ForegroundColor Green
+
+# Display dependency summary
+Write-Host "`n=== NETWORK DEPENDENCY ANALYSIS ===" -ForegroundColor Yellow
+Write-Host "VNet Peerings Found: $($peeringInventory.Count)" -ForegroundColor White
+Write-Host "NSG Rules Analyzed: $($nsgInventory.Count)" -ForegroundColor White
+Write-Host "Custom Routes Found: $($routeTableInventory.Count)" -ForegroundColor White
+Write-Host "Gateways Found: $($connectivityInventory.Count)" -ForegroundColor White
+Write-Host "Network Services Found: $($networkServicesInventory.Count)" -ForegroundColor White
+
+# Critical dependencies for Virtual WAN migration
+$criticalPeerings = $peeringInventory | Where-Object { $_.UseRemoteGateways -eq $true -or $_.AllowGatewayTransit -eq $true }
+$customRoutes = $routeTableInventory | Where-Object { $_.NextHopType -ne "Internet" -and $_.NextHopType -ne "VnetLocal" }
+
+Write-Host "`n=== CRITICAL MIGRATION CONSIDERATIONS ===" -ForegroundColor Red
+Write-Host "VNets using gateway transit: $($criticalPeerings.Count)" -ForegroundColor Yellow
+Write-Host "Custom routes requiring attention: $($customRoutes.Count)" -ForegroundColor Yellow
+
+if ($criticalPeerings.Count -gt 0) {
+    Write-Host "`nVNets with gateway dependencies:" -ForegroundColor Yellow
+    $criticalPeerings | ForEach-Object { Write-Host "  - $($_.VNetName) in $($_.SubscriptionName)" -ForegroundColor White }
+}
+
+Write-Host "`n=== VIRTUAL WAN MIGRATION READINESS ===" -ForegroundColor Yellow
+Write-Host "Files created for detailed analysis:" -ForegroundColor Cyan
+Write-Host "- VNet Peering: VNet-Peering-Analysis-$timestamp.csv" -ForegroundColor White
+Write-Host "- NSG Rules: NSG-Analysis-$timestamp.csv" -ForegroundColor White
+Write-Host "- Route Tables: Route-Table-Analysis-$timestamp.csv" -ForegroundColor White
+Write-Host "- Connectivity: Connectivity-Analysis-$timestamp.csv" -ForegroundColor White
+Write-Host "- Network Services: Network-Services-Analysis-$timestamp.csv" -ForegroundColor White

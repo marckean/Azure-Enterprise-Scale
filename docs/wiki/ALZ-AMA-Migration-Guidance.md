@@ -24,9 +24,11 @@ All Defender for Servers features and capabilities will be provided through a si
 ## This guide covers the following topics
 
 - **Assess current state:** Identify and determine the steps required to migrate to AMA.
+- **Log Analytics Table Type Strategy:** Understand and implement cost-optimized table types for different data categories.
 - **Update Azure Landing Zones:** Guidance and automation to update your Azure Landing Zones components. Automation helps configure the following tasks:
   - Deploy User Assigned Managed Identity
-  - Deploy Data Collection Rules
+  - Deploy Data Collection Rules with table type routing
+  - Configure Analytics, Auxiliary, and Basic tables based on data classification
   - Update Policy and Initiative definitions
   - Remove Legacy Policy Assignments
   - Remove Legacy Solutions
@@ -377,3 +379,31 @@ Set the correct values for:
 ```powershell
 .\src\scripts\Update-AzureLandingZonesToAMA.ps1 -location "northeurope" -eslzRoot "contoso" -managementResourceGroupName "contoso-mgmt" -workspaceResourceId "/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.OperationalInsights/workspaces/{workspaceName}" -workspaceRegion "northeurope" -migrationPath UpdateAMA -removeObsoleteUAMI
 ```
+
+## Data Classification and Table Type Strategy
+
+### Visual Data Classification Framework
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Data Classification                           │
+├─────────────────────────────────────────────────────────────────┤
+│  🔥 Hot Data          │  🌡️ Warm Data        │  🧊 Cold Data      │
+│  (Analytics Tables)   │  (Auxiliary Tables)  │  (Basic Tables)   │
+│                       │                      │                   │
+│  • Security events    │  • Compliance logs   │  • Archive data   │
+│  • Performance data   │  • Audit trails      │  • Historical     │
+│  • Real-time alerts   │  • Change tracking   │  • Long-term      │
+│  • Cost: $$$         │  • Cost: $$          │  • Cost: $        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Migration Considerations by Data Type
+
+| Data Source | Recommended Table Type | Justification | Cost Impact |
+|-------------|----------------------|---------------|-------------|
+| VM Insights Performance | Analytics | Real-time monitoring required | Baseline |
+| Change Tracking Logs | Auxiliary | Compliance and periodic review | 40-60% savings |
+| Security Events (Critical) | Analytics | Immediate alerting needed | Baseline |
+| Audit Logs (General) | Basic | Long-term retention, infrequent access | 70-90% savings |
+| Defender for SQL Alerts | Analytics | Real-time security monitoring | Baseline |

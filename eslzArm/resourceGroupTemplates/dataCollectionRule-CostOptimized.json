@@ -1,0 +1,100 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "dcrName": {
+            "type": "string",
+            "defaultValue": "dcr-cost-optimized-monitoring",
+            "metadata": {
+                "description": "Name of the Data Collection Rule for cost-optimized monitoring"
+            }
+        },
+        "workspaceResourceId": {
+            "type": "string",
+            "metadata": {
+                "description": "Resource ID of the Log Analytics workspace"
+            }
+        },
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]",
+            "metadata": {
+                "description": "Location for the DCR"
+            }
+        }
+    },
+    "variables": {
+        "workspaceName": "[last(split(parameters('workspaceResourceId'), '/'))]"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Insights/dataCollectionRules",
+            "apiVersion": "2023-03-11",
+            "name": "[parameters('dcrName')]",
+            "location": "[parameters('location')]",
+            "properties": {
+                "description": "Cost-optimized data collection rule for enterprise monitoring",
+                "dataFlows": [
+                    {
+                        "streams": [
+                            "Microsoft-SecurityEvent"
+                        ],
+                        "destinations": [
+                            "analytics-destination"
+                        ],
+                        "transformKql": "SecurityEvent | where EventLevelName in ('Critical', 'Error') or (EventLevelName == 'Warning' and EventID in (4625, 4624, 4648))"
+                    },
+                    {
+                        "streams": [
+                            "Microsoft-Event"
+                        ],
+                        "destinations": [
+                            "basic-destination"
+                        ],
+                        "transformKql": "Event | where EventLevelName != 'Information' or (EventLevelName == 'Information' and Source in ('Microsoft-Windows-Security-Auditing')) | project TimeGenerated, Computer, EventLevelName, EventID, Source, RenderedDescription"
+                    },
+                    {
+                        "streams": [
+                            "Microsoft-Syslog"
+                        ],
+                        "destinations": [
+                            "basic-destination"
+                        ],
+                        "transformKql": "Syslog | where SeverityLevel in ('crit', 'err', 'warning') | project TimeGenerated, Computer, Facility, SeverityLevel, ProcessName, SyslogMessage"
+                    },
+                    {
+                        "streams": [
+                            "Microsoft-Perf"
+                        ],
+                        "destinations": [
+                            "analytics-destination"
+                        ],
+                        "transformKql": "Perf | where ObjectName in ('Processor', 'Memory', 'LogicalDisk') and (CounterName in ('% Processor Time', 'Available MBytes', '% Free Space') or (CounterName == 'Avg. Disk sec/Read' and CounterValue > 0.1))"
+                    }
+                ],
+                "destinations": {
+                    "logAnalytics": [
+                        {
+                            "workspaceResourceId": "[parameters('workspaceResourceId')]",
+                            "name": "analytics-destination"
+                        },
+                        {
+                            "workspaceResourceId": "[parameters('workspaceResourceId')]",
+                            "name": "basic-destination"
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "outputs": {
+        "dcrResourceId": {
+            "type": "string",
+            "value": "[resourceId('Microsoft.Insights/dataCollectionRules', parameters('dcrName'))]"
+        },
+        "dcrName": {
+            "type": "string",
+            "value": "[parameters('dcrName')]"
+        }
+    }
+}
