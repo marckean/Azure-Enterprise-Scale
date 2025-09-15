@@ -209,12 +209,14 @@ foreach ($subscription in $subscriptions) {
             }
             $vnetInventory += $vnetRecord
             
-            # Analyze VNet Peerings
+            # Analyze VNet Peerings with enhanced validation
             if ($vnet.VirtualNetworkPeerings) {
                 foreach ($peering in $vnet.VirtualNetworkPeerings) {
                     $remoteVNetName = "Unknown"
                     $remoteSubscription = "Unknown"
                     $remoteResourceGroup = "Unknown"
+                    $validationStatus = "Not Validated"
+                    $validationMessage = "No remote VNet ID available"
                     
                     if ($peering.RemoteVirtualNetwork -and $peering.RemoteVirtualNetwork.Id) {
                         $remoteVNetId = $peering.RemoteVirtualNetwork.Id
@@ -223,6 +225,95 @@ foreach ($subscription in $subscriptions) {
                             $remoteVNetName = $idParts[-1]
                             $remoteSubscription = $idParts[2]
                             $remoteResourceGroup = $idParts[4]
+                            
+                            # Enhanced validation: Check if remote VNet exists and is accessible
+                            try {
+                                $originalContext = Get-AzContext
+                                $remoteVNetExists = $false
+                                $accessDenied = $false
+                                
+                                # Only try to validate if it's a different subscription
+                                if ($remoteSubscription -ne $subscription.Id) {
+                                    try {
+                                        # Try to switch to remote subscription context
+                                        $remoteContext = Set-AzContext -SubscriptionId $remoteSubscription -ErrorAction SilentlyContinue
+                                        if ($remoteContext) {
+                                            # Try to get the remote VNet
+                                            $remoteVNet = Get-AzVirtualNetwork -ResourceGroupName $remoteResourceGroup -Name $remoteVNetName -ErrorAction SilentlyContinue
+                                            if ($remoteVNet) {
+                                                $remoteVNetExists = $true
+                                                $validationStatus = "Validated"
+                                                $validationMessage = "Remote VNet exists and is accessible"
+                                                Write-Verbose "✅ Validated remote VNet: $remoteVNetName in subscription $remoteSubscription"
+                                            } else {
+                                                # Check if resource group exists to differentiate access vs existence issues
+                                                $remoteRG = Get-AzResourceGroup -Name $remoteResourceGroup -ErrorAction SilentlyContinue
+                                                if ($remoteRG) {
+                                                    $validationStatus = "Not Found"
+                                                    $validationMessage = "VNet $remoteVNetName not found in resource group $remoteResourceGroup. May have been deleted or renamed."
+                                                } else {
+                                                    $accessDenied = $true
+                                                    $validationStatus = "Access Denied"
+                                                    $validationMessage = "Cannot access resource group $remoteResourceGroup in subscription $remoteSubscription"
+                                                }
+                                            }
+                                        } else {
+                                            $accessDenied = $true
+                                            $validationStatus = "Access Denied"
+                                            $validationMessage = "Cannot access subscription $remoteSubscription. Check permissions."
+                                        }
+                                    }
+                                    catch {
+                                        if ($_.Exception.Message -like "*AuthorizationFailed*" -or 
+                                            $_.Exception.Message -like "*Forbidden*" -or 
+                                            $_.Exception.Message -like "*insufficient privileges*") {
+                                            $accessDenied = $true
+                                            $validationStatus = "Access Denied"
+                                            $validationMessage = "Insufficient permissions to access subscription $remoteSubscription"
+                                        } else {
+                                            $validationStatus = "Error"
+                                            $validationMessage = "Error validating remote VNet: $($_.Exception.Message)"
+                                        }
+                                    }
+                                    finally {
+                                        # Restore original context
+                                        if ($originalContext) {
+                                            Set-AzContext -Context $originalContext | Out-Null
+                                        }
+                                    }
+                                } else {
+                                    # Same subscription - try direct validation
+                                    try {
+                                        $remoteVNet = Get-AzVirtualNetwork -ResourceGroupName $remoteResourceGroup -Name $remoteVNetName -ErrorAction SilentlyContinue
+                                        if ($remoteVNet) {
+                                            $remoteVNetExists = $true
+                                            $validationStatus = "Validated"
+                                            $validationMessage = "Remote VNet exists in same subscription"
+                                        } else {
+                                            $validationStatus = "Not Found"
+                                            $validationMessage = "VNet $remoteVNetName not found in resource group $remoteResourceGroup in same subscription"
+                                        }
+                                    }
+                                    catch {
+                                        $validationStatus = "Error"
+                                        $validationMessage = "Error validating remote VNet in same subscription: $($_.Exception.Message)"
+                                    }
+                                }
+                                
+                                # Log appropriate message based on validation result
+                                if ($validationStatus -eq "Access Denied") {
+                                    Write-Host "      ⚠️  Access denied to remote VNet $remoteVNetName in subscription $remoteSubscription - this may be expected for cross-tenant or restricted subscriptions" -ForegroundColor Yellow
+                                } elseif ($validationStatus -eq "Not Found") {
+                                    Write-Warning "      ❌ VNet $remoteVNetName not found in subscription $remoteSubscription, resource group $remoteResourceGroup. This may indicate a stale peering link."
+                                } elseif ($validationStatus -eq "Validated") {
+                                    Write-Host "      ✅ Remote VNet $remoteVNetName validated successfully" -ForegroundColor Green
+                                }
+                            }
+                            catch {
+                                $validationStatus = "Error"
+                                $validationMessage = "Unexpected error during validation: $($_.Exception.Message)"
+                                Write-Warning "      Error validating remote VNet $remoteVNetName`: $($_.Exception.Message)"
+                            }
                         }
                     }
                     
@@ -241,6 +332,9 @@ foreach ($subscription in $subscriptions) {
                         RemoteSubscription = $remoteSubscription
                         RemoteResourceGroup = $remoteResourceGroup
                         RemoteVNetId = if ($peering.RemoteVirtualNetwork -and $peering.RemoteVirtualNetwork.Id) { $peering.RemoteVirtualNetwork.Id } else { "Unknown" }
+                        ValidationStatus = $validationStatus
+                        ValidationMessage = $validationMessage
+                        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                     }
                     $peeringInventory += $peeringRecord
                 }
